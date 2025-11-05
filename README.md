@@ -1,7 +1,7 @@
 # Telegram Summarizer Bot 🤖📚
 
 ## About the Bot
-This Telegram bot summarizes messages from a group chat based on a selected time range (e.g., last 12 hours, 1 day, 1 week). It uses machine learning (BART model) to generate concise summaries, making it easier for users to catch up on important discussions.
+This Telegram bot summarizes messages from a group chat based on a selected time range (e.g., last 12 hours, 1 day, 1 week) or message count. It uses Google Gemini API to generate concise summaries, making it easier for users to catch up on important discussions.
 
 ## Why I Built This Bot
 I often miss out on reading all the messages in my group chats due to a busy schedule. This bot helps me stay informed by providing a summarized overview of key discussions over a selected period.
@@ -11,11 +11,9 @@ I often miss out on reading all the messages in my group chats due to a busy sch
 ✅ Summarize messages based on:
    - **Time ranges**: `12 hours`, `1 day`, `1 week`, etc.
    - **Message count**: Last N messages (e.g., last 50, last 100 messages)
-✅ Supports **multiple AI models**:
-   - **Google Gemini API** for high-quality summaries (configurable)
-   - **BART model** (Hugging Face) as fallback option
+✅ Uses **Google Gemini API** for high-quality AI-powered summaries
 ✅ API keys stored securely as environment variables  
-✅ Supports **customizable summary lengths**  
+✅ Lightweight and fast - no local AI models to download  
 
 ## How to Use
 1. **Start the bot** by adding it to your group chat.
@@ -43,8 +41,7 @@ I often miss out on reading all the messages in my group chats due to a busy sch
      ```
    - Edit `.env` and add your secrets:
      - `TELEGRAM_BOT_TOKEN`: Your Telegram Bot Token (get it from [@BotFather](https://t.me/BotFather))
-     - `USE_GOOGLE_API`: Set to `true` to use Google Gemini API, or `false` to use BART model
-     - `GOOGLE_API_KEY`: Your Google API key (required if `USE_GOOGLE_API=true`)
+     - `GOOGLE_API_KEY`: Your Google API key (required)
        - Get your API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
 
 4. **Run the bot:**
@@ -57,10 +54,9 @@ I often miss out on reading all the messages in my group chats due to a busy sch
 - `pyTelegramBotAPI` - Telegram bot API wrapper
 - `pandas` - Data manipulation
 - `python-dotenv` - Environment variable management
-- `google-generativeai` - Google Gemini API (if using Google API)
-- `transformers` & `torch` - For BART model (if not using Google API)
+- `google-generativeai` - Google Gemini API
 
-**Note:** You can use either Google API or BART model. If using Google API, you only need `google-generativeai`. If using BART, you need `transformers` and `torch`.
+**Note:** This bot uses Google Gemini API exclusively. No local AI models are required, making it lightweight and fast to install (~50-70 MB total).
 
 ## Deployment
 To keep the bot running continuously on a server, use:

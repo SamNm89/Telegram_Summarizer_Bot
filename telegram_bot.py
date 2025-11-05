@@ -10,14 +10,13 @@ load_dotenv()
 # Get secrets from environment variables
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-USE_GOOGLE_API = os.getenv("USE_GOOGLE_API", "false").lower() == "true"
 
 # Validate required tokens
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN environment variable is required!")
 
-if USE_GOOGLE_API and not GOOGLE_API_KEY:
-    raise ValueError("GOOGLE_API_KEY environment variable is required when USE_GOOGLE_API is true!")
+if not GOOGLE_API_KEY:
+    raise ValueError("GOOGLE_API_KEY environment variable is required!")
 
 bot = telebot.TeleBot(TOKEN, parse_mode="Markdown")
 
@@ -33,25 +32,17 @@ TIME_INTERVALS = {
     "1week": 168,
 }
 
-# Initialize AI summarization
-if USE_GOOGLE_API:
-    try:
-        import google.generativeai as genai
-        genai.configure(api_key=GOOGLE_API_KEY)
-        model = genai.GenerativeModel('gemini-pro')
-        print("✅ Using Google Gemini API for summarization")
-    except ImportError:
-        raise ImportError("google-generativeai package is required. Install it with: pip install google-generativeai")
-else:
-    try:
-        from transformers import pipeline
-        summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-        print("✅ Using BART model for summarization")
-    except ImportError:
-        raise ImportError("transformers package is required. Install it with: pip install transformers torch")
+# Initialize Google Gemini API for summarization
+try:
+    import google.generativeai as genai
+    genai.configure(api_key=GOOGLE_API_KEY)
+    model = genai.GenerativeModel('gemini-pro')
+    print("✅ Using Google Gemini API for summarization")
+except ImportError:
+    raise ImportError("google-generativeai package is required. Install it with: pip install google-generativeai")
 
 
-def summarize_with_google(text):
+def summarize_text(text):
     """Summarize text using Google Gemini API"""
     # Google Gemini has a large context window, but truncate if extremely long to be safe
     # Gemini Pro supports ~30k tokens, so ~200k characters should be safe
@@ -77,30 +68,12 @@ def summarize_with_google(text):
         raise
 
 
-def summarize_with_bart(text):
-    """Summarize text using BART model"""
-    if len(text) > 1024:
-        text = text[:1024]
-    result = summarizer(text, max_length=100, min_length=30, do_sample=False)
-    return result[0]["summary_text"]
-
-
-def summarize_text(text):
-    """Unified summarization function that uses the configured AI"""
-    if USE_GOOGLE_API:
-        return summarize_with_google(text)
-    else:
-        return summarize_with_bart(text)
-
-
 # Command to start the bot
 @bot.message_handler(commands=["start"])
 def send_welcome(message):
-    ai_type = "Google Gemini API" if USE_GOOGLE_API else "BART model"
     bot.reply_to(
         message,
-        f"Hello! You can summarize your messages in the group.\n\n"
-        f"*Current AI:* {ai_type}\n\n"
+        f"Hello! You can summarize your messages in the group using Google Gemini AI.\n\n"
         "Use: `/summarize <option>`\n\n"
         "*Time-based options:* \n"
         "- `12hr` (Last 12 hours)\n"
@@ -173,7 +146,7 @@ def summarize_messages(message):
                 # Time-based: filter by time range
                 end_time = datetime.datetime.now()
                 start_time = end_time - datetime.timedelta(hours=hours)
-                group_messages = df[df["date"] >= start_time]
+                group_messages = df[(df["date"] >= start_time) & (df["date"] <= end_time)]
         else:
             # Filter by chat_id to ensure we only summarize messages from this group
             chat_filtered = df[df["chat_id"] == chat_id]
@@ -225,6 +198,10 @@ def summarize_messages(message):
 def log_messages(message):
     """Logs all text messages from the group."""
     if message.chat.type in ["group", "supergroup"]:
+        # Skip if message.text is None (e.g., for media messages)
+        if message.text is None:
+            return
+            
         user_id = message.from_user.id
         username = message.from_user.username or "Unknown"
         chat_id = message.chat.id
