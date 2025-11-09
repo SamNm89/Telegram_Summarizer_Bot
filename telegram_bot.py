@@ -2,6 +2,8 @@ import telebot
 import pandas as pd
 import datetime
 import os
+
+import sys
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -35,9 +37,56 @@ TIME_INTERVALS = {
 # Initialize Google Gemini API for summarization
 try:
     import google.generativeai as genai
+    # Set UTF-8 encoding for stdout to handle Unicode characters
+    if sys.stdout.encoding != 'utf-8':
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+        except (AttributeError, ValueError):
+            # Fallback for older Python versions or when reconfigure is not available
+            pass
     genai.configure(api_key=GOOGLE_API_KEY)
-    model = genai.GenerativeModel('gemini-pro')
-    print("✅ Using Google Gemini API for summarization")
+    
+    # Try to find an available model - list of models to try (free tier compatible)
+    model_names_to_try = [
+        'gemini-2.0-flash-exp',
+        'gemini-1.5-flash',
+        'gemini-1.5-pro',
+        'gemini-pro',
+        'gemini-2.5-flash-lite'
+    ]
+    
+    model = None
+    model_name = None
+    
+    # First, try to list available models
+    try:
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        print(f"Available models: {available_models}")
+        
+        # Try to find a matching model from our list
+        for name in model_names_to_try:
+            # Check if model name matches (could be full path like 'models/gemini-1.5-flash')
+            matching = [m for m in available_models if name in m]
+            if matching:
+                model_name = matching[0].split('/')[-1] if '/' in matching[0] else matching[0]
+                model = genai.GenerativeModel(model_name)
+                print(f"[OK] Using Google Gemini API model: {model_name}")
+                break
+    except Exception as e:
+        print(f"Could not list models: {e}")
+        # Fallback: try models directly
+        for name in model_names_to_try:
+            try:
+                model = genai.GenerativeModel(name)
+                model_name = name
+                print(f"[OK] Using Google Gemini API model: {name}")
+                break
+            except Exception:
+                continue
+    
+    if model is None:
+        raise ValueError("Could not initialize any Gemini model. Please check your API key and available models.")
+        
 except ImportError:
     raise ImportError("google-generativeai package is required. Install it with: pip install google-generativeai")
 
@@ -68,13 +117,43 @@ def summarize_text(text):
         raise
 
 
+def save_message_to_csv(user_id, username, chat_id, text, date_str):
+    """Helper function to save a message to CSV"""
+    df = pd.DataFrame([[user_id, username, chat_id, text, date_str]], 
+                      columns=["user_id", "username", "chat_id", "message", "date"])
+    
+    try:
+        # Check if file exists and has content before reading
+        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 0:
+            existing_df = pd.read_csv(LOG_FILE)
+            # Check if message already exists (avoid duplicates)
+            if not existing_df.empty and "message" in existing_df.columns:
+                # Simple duplicate check: same chat_id, message text, and similar timestamp
+                existing_df["date"] = pd.to_datetime(existing_df["date"])
+                date_obj = pd.to_datetime(date_str)
+                # Check for duplicates within 1 second
+                mask = (existing_df["chat_id"] == chat_id) & \
+                       (existing_df["message"] == text) & \
+                       (abs((existing_df["date"] - date_obj).dt.total_seconds()) < 1)
+                if mask.any():
+                    return False  # Message already exists
+            df = pd.concat([existing_df, df], ignore_index=True)
+    except (FileNotFoundError, pd.errors.EmptyDataError):
+        pass
+    
+    df.to_csv(LOG_FILE, index=False)
+    return True
+
+
 # Command to start the bot
 @bot.message_handler(commands=["start"])
 def send_welcome(message):
     bot.reply_to(
         message,
         f"Hello! You can summarize your messages in the group using Google Gemini AI.\n\n"
-        "Use: `/summarize <option>`\n\n"
+        "*Commands:*\n"
+        "- `/summarize <option>` - Summarize messages\n"
+        "- `/sync` - Fetch recent messages (messages sent after bot was added)\n\n"
         "*Time-based options:* \n"
         "- `12hr` (Last 12 hours)\n"
         "- `18hr` (Last 18 hours)\n"
@@ -86,7 +165,8 @@ def send_welcome(message):
         "- Example: `/summarize last 50`\n\n"
         "*Examples:*\n"
         "- `/summarize 1day` (time-based)\n"
-        "- `/summarize last 100` (count-based)"
+        "- `/summarize last 100` (count-based)\n\n"
+        "*Note:* Bots can only access messages sent after they were added to the group."
     )
 
 
@@ -133,7 +213,22 @@ def summarize_messages(message):
         return
 
     try:
-        df = pd.read_csv(LOG_FILE)
+        # Check if file exists and has content
+        if not os.path.exists(LOG_FILE) or os.path.getsize(LOG_FILE) == 0:
+            bot.reply_to(message, "No messages found. The message log is empty. Start chatting in the group to log messages.")
+            return
+        
+        try:
+            df = pd.read_csv(LOG_FILE)
+        except pd.errors.EmptyDataError:
+            bot.reply_to(message, "No messages found. The message log is empty. Start chatting in the group to log messages.")
+            return
+        
+        # Check if DataFrame is empty
+        if df.empty:
+            bot.reply_to(message, "No messages found. The message log is empty. Start chatting in the group to log messages.")
+            return
+        
         df["date"] = pd.to_datetime(df["date"])
 
         # Filter messages from the current group
@@ -193,6 +288,61 @@ def summarize_messages(message):
         bot.reply_to(message, f"❌ An error occurred: {str(e)}")
 
 
+# Command to sync/fetch recent messages
+@bot.message_handler(commands=["sync"])
+def sync_messages(message):
+    """Attempts to fetch and log recent messages from the group."""
+    if message.chat.type not in ["group", "supergroup"]:
+        bot.reply_to(message, "This command can only be used in groups.")
+        return
+    
+    chat_id = message.chat.id
+    bot.reply_to(message, "⏳ Syncing messages... This may take a moment.")
+    
+    try:
+        # Get recent updates from Telegram
+        # Note: Bots can only access messages sent after they were added to the group
+        updates = bot.get_updates(limit=100, timeout=1)
+        
+        synced_count = 0
+        for update in updates:
+            if hasattr(update, 'message') and update.message:
+                msg = update.message
+                if (msg.chat.id == chat_id and 
+                    msg.chat.type in ["group", "supergroup"] and
+                    msg.text and 
+                    not msg.text.startswith('/')):
+                    # Extract message data
+                    user_id = msg.from_user.id if msg.from_user else 0
+                    username = msg.from_user.username if msg.from_user and msg.from_user.username else "Unknown"
+                    text = msg.text
+                    # Convert message date to our format
+                    msg_date = datetime.datetime.fromtimestamp(msg.date)
+                    date_str = msg_date.strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    # Save message
+                    if save_message_to_csv(user_id, username, chat_id, text, date_str):
+                        synced_count += 1
+        
+        if synced_count > 0:
+            bot.reply_to(message, f"✅ Synced {synced_count} messages to the log.")
+        else:
+            bot.reply_to(
+                message, 
+                "No new messages found to sync.\n\n"
+                "Note: Bots can only access messages sent after they were added to the group. "
+                "Messages sent before the bot was added cannot be retrieved."
+            )
+    except Exception as e:
+        print(f"Sync error: {e}")
+        bot.reply_to(
+            message, 
+            f"⚠️ Sync completed with limitations.\n\n"
+            "Note: Due to Telegram API restrictions, bots can only access messages sent after they were added to the group. "
+            "The bot will automatically log all new messages going forward."
+        )
+
+
 # Function to log messages in the group
 @bot.message_handler(func=lambda message: True, content_types=["text"])
 def log_messages(message):
@@ -201,6 +351,10 @@ def log_messages(message):
         # Skip if message.text is None (e.g., for media messages)
         if message.text is None:
             return
+        
+        # Skip bot commands (they're handled separately)
+        if message.text.startswith('/'):
+            return
             
         user_id = message.from_user.id
         username = message.from_user.username or "Unknown"
@@ -208,18 +362,16 @@ def log_messages(message):
         text = message.text
         date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        print(f"Logging message: {username} ({user_id}) in chat {chat_id} - {text}")  # Debugging
-
-        # Save message to CSV (include chat_id to support multiple groups)
-        df = pd.DataFrame([[user_id, username, chat_id, text, date]], columns=["user_id", "username", "chat_id", "message", "date"])
-
+        # Safe print that handles Unicode characters
         try:
-            existing_df = pd.read_csv(LOG_FILE)
-            df = pd.concat([existing_df, df], ignore_index=True)
-        except FileNotFoundError:
-            pass
+            print(f"Logging message: {username} ({user_id}) in chat {chat_id} - {text}")
+        except UnicodeEncodeError:
+            # Fallback for Windows console encoding issues
+            safe_text = text.encode('ascii', 'replace').decode('ascii')
+            print(f"Logging message: {username} ({user_id}) in chat {chat_id} - {safe_text}")
 
-        df.to_csv(LOG_FILE, index=False)
+        # Save message to CSV using helper function
+        save_message_to_csv(user_id, username, chat_id, text, date)
 
 
 # Start the bot
