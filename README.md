@@ -67,10 +67,8 @@ nohup python telegram_bot.py &
 ## License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## Author
-👨‍💻 **Original Author:** Mehran Mirzaei  
-📧 Connect on [LinkedIn](https://www.linkedin.com/in/mehran-mirzaei)
+
 
 **Forked & Enhanced by:** SamNm89  
-💻 Open to contributions & improvements! 🚀  
+
 
